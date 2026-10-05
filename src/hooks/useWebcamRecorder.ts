@@ -1,10 +1,14 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import {
-  RECORDING_OPTIONS,
-  VIDEO_CONSTRAINTS,
+  DEFAULT_BITRATE,
+  DEFAULT_RESOLUTION,
   ensureExtension,
   extensionFor,
   getPreferredMimeType,
+  recorderOptionsFor,
+  videoConstraintsFor,
+  type BitratePreset,
+  type ResolutionPreset,
 } from '../lib/recorder'
 import type { PermissionState } from '../components/PermissionModal'
 
@@ -22,11 +26,15 @@ export interface UseWebcamRecorderReturn {
   setFileName: (name: string) => void
   showSaveDialog: boolean
   setShowSaveDialog: (show: boolean) => void
+  resolution: ResolutionPreset
+  setResolution: (resolution: ResolutionPreset) => void
+  bitrate: BitratePreset
+  setBitrate: (bitrate: BitratePreset) => void
   startPreview: () => Promise<void>
   pause: () => void
   resume: () => void
   stop: () => void
-  saveRecording: () => Promise<void>
+  saveRecording: (blob?: Blob | null, name?: string) => Promise<void>
   discardRecording: () => void
   permissionState: PermissionState
   permissionModalOpen: boolean
@@ -68,6 +76,8 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
   const [saved, setSaved] = useState(false)
   const [permissionState, setPermissionState] = useState<PermissionState>('unknown')
   const [permissionModalOpen, setPermissionModalOpen] = useState(false)
+  const [resolution, setResolution] = useState<ResolutionPreset>(DEFAULT_RESOLUTION)
+  const [bitrate, setBitrate] = useState<BitratePreset>(DEFAULT_BITRATE)
   const [fileName, setFileName] = useState('')
   const [showSaveDialog, setShowSaveDialog] = useState(false)
 
@@ -109,7 +119,7 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
     startedRef.current = true
 
     const mimeType = getPreferredMimeType()
-    const recorder = new MediaRecorder(streamRef.current, { ...RECORDING_OPTIONS, mimeType })
+    const recorder = new MediaRecorder(streamRef.current, { ...recorderOptionsFor(resolution, bitrate), mimeType })
     mediaRecorderRef.current = recorder
 
     recorder.ondataavailable = (e: BlobEvent) => {
@@ -144,13 +154,13 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
     recorder.start(extensionFor(mimeType) === 'mp4' ? undefined : 1000)
     startDurationInterval()
     setStatus('recording')
-  }, [clearCountdownInterval, clearDurationInterval, releaseTracks, startDurationInterval])
+  }, [bitrate, clearCountdownInterval, clearDurationInterval, releaseTracks, resolution, startDurationInterval])
 
   const requestPermissions = useCallback(async () => {
     setError(null)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: VIDEO_CONSTRAINTS,
+        video: videoConstraintsFor(resolution),
         audio: true,
       })
       stream.getTracks().forEach((t) => t.stop())
@@ -166,7 +176,7 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
           : 'Could not access camera or microphone. Check your device settings.',
       )
     }
-  }, [])
+  }, [resolution])
 
   const dismissPermissionModal = useCallback(() => setPermissionModalOpen(false), [])
 
@@ -231,7 +241,7 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: VIDEO_CONSTRAINTS,
+        video: videoConstraintsFor(resolution),
         audio: true,
       })
       streamRef.current = stream
@@ -272,7 +282,7 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
       releaseTracks()
       setStatus('idle')
     }
-  }, [clearCountdownInterval, clearDurationInterval, releaseTracks, startRecordingNow])
+  }, [clearCountdownInterval, clearDurationInterval, releaseTracks, resolution, startRecordingNow])
 
   const pause = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -328,11 +338,12 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
     setStatus('idle')
   }, [clearCountdownInterval, clearDurationInterval, releaseTracks])
 
-  const saveRecording = useCallback(async () => {
-    if (!recordedBlob) return
+  const saveRecording = useCallback(async (blob?: Blob | null, name?: string) => {
+    const blobToSave = blob ?? recordedBlob
+    if (!blobToSave) return
 
-    const ext = extensionFor(recordedBlob.type)
-    const finalName = ensureExtension(fileName, ext)
+    const ext = extensionFor(blobToSave.type)
+    const finalName = ensureExtension(name ?? fileName, ext)
     const picker = getShowSaveFilePicker()
 
     if (picker) {
@@ -347,7 +358,7 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
           ],
         })
         const writable = await handle.createWritable()
-        await writable.write(recordedBlob)
+        await writable.write(blobToSave)
         await writable.close()
         setError(null)
         setSaved(true)
@@ -360,7 +371,7 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
       }
     }
 
-    const url = URL.createObjectURL(recordedBlob)
+    const url = URL.createObjectURL(blobToSave)
     const a = document.createElement('a')
     a.href = url
     a.download = finalName
@@ -396,6 +407,10 @@ export function useWebcamRecorder(): UseWebcamRecorderReturn {
     setFileName,
     showSaveDialog,
     setShowSaveDialog,
+    resolution,
+    setResolution,
+    bitrate,
+    setBitrate,
     startPreview,
     pause,
     resume,

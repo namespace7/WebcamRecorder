@@ -117,6 +117,39 @@ test.describe('WebcamRecorder', () => {
     expect(await page.evaluate(() => window.localStorage.getItem('webcamrecorder-theme'))).toBe('dark')
   })
 
+  test('quality presets reach getUserMedia and MediaRecorder', async ({ page }) => {
+    await page.addInitScript(() => {
+      ;(window as any).__gumCalls = []
+      ;(window as any).__recorderOptions = []
+
+      const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+      navigator.mediaDevices.getUserMedia = async (constraints) => {
+        ;(window as any).__gumCalls.push(constraints)
+        return originalGetUserMedia(constraints)
+      }
+
+      const OriginalMediaRecorder = window.MediaRecorder
+      ;(window as any).MediaRecorder = class extends OriginalMediaRecorder {
+        constructor(stream: MediaStream, options?: MediaRecorderOptions) {
+          ;(window as any).__recorderOptions.push(options)
+          super(stream, options)
+        }
+      }
+    })
+
+    await page.goto('/')
+    await expect(page.getByRole('option', { name: 'Ultra' })).toBeAttached()
+    await page.getByLabel('Resolution').selectOption('1080p')
+    await page.getByLabel('Bitrate').selectOption('high')
+    await page.getByRole('button', { name: 'Start Recording' }).click()
+    await expect(page.getByText('● Recording')).toBeVisible({ timeout: 8000 })
+
+    const gumCalls = await page.evaluate(() => (window as any).__gumCalls)
+    const recorderOptions = await page.evaluate(() => (window as any).__recorderOptions)
+    expect(gumCalls[0].video).toMatchObject({ width: { ideal: 1920 }, height: { ideal: 1080 } })
+    expect(recorderOptions[0]).toMatchObject({ audioBitsPerSecond: 128000, videoBitsPerSecond: 10000000 })
+  })
+
   test('fallback download uses custom filename', async ({ page }) => {
     await page.goto('/')
     await page.evaluate(() => {
@@ -129,6 +162,7 @@ test.describe('WebcamRecorder', () => {
     await page.getByRole('button', { name: 'Stop' }).click()
 
     await page.getByLabel('File name').fill('custom-name')
+    await expect(page.getByText(/Firefox\/Safari usually save/i)).toBeVisible()
     const downloadPromise = page.waitForEvent('download')
     await page.getByRole('button', { name: 'Save' }).click()
     const download = await downloadPromise

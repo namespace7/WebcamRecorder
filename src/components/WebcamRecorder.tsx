@@ -1,8 +1,9 @@
-import { type FC } from 'react'
+import { useEffect, useRef, useState, type FC } from 'react'
 import { useWebcamRecorder, type RecorderStatus } from '../hooks/useWebcamRecorder'
 import { RecordingErrorBoundary } from './RecordingErrorBoundary'
 import { PermissionModal } from './PermissionModal'
-import { formatDuration } from '../lib/recorder'
+import { ensureExtension, extensionFor, formatDuration, isSaveFilePickerSupported } from '../lib/recorder'
+import { exportBlobToMp4 } from '../lib/ffmpegExport'
 
 function statusLabel(s: RecorderStatus): string {
   switch (s) {
@@ -44,6 +45,10 @@ const WebcamRecorderInner: FC = () => {
     setFileName,
     showSaveDialog,
     setShowSaveDialog,
+    resolution,
+    setResolution,
+    bitrate,
+    setBitrate,
     startPreview,
     pause,
     resume,
@@ -57,6 +62,79 @@ const WebcamRecorderInner: FC = () => {
   } = useWebcamRecorder()
 
   const canStart = status === 'idle' || (status === 'stopped' && (saved || !recordedBlob))
+
+  const nativeExt = recordedBlob ? extensionFor(recordedBlob.type) : 'webm'
+  const [saveFormat, setSaveFormat] = useState<'native' | 'mp4'>('native')
+  const [conversion, setConversion] = useState<{
+    status: 'idle' | 'running' | 'ready' | 'error'
+    progress: number
+    blob: Blob | null
+    error: string | null
+  }>({ status: 'idle', progress: 0, blob: null, error: null })
+  const exportAbortRef = useRef<AbortController | null>(null)
+  const needsMp4Conversion = recordedBlob ? saveFormat === 'mp4' && !recordedBlob.type.includes('mp4') : false
+
+  const [lastRecordedBlob, setLastRecordedBlob] = useState(recordedBlob)
+  if (lastRecordedBlob !== recordedBlob) {
+    setLastRecordedBlob(recordedBlob)
+    setSaveFormat('native')
+    setConversion({ status: 'idle', progress: 0, blob: null, error: null })
+  }
+
+  useEffect(() => {
+    return () => {
+      exportAbortRef.current?.abort()
+      exportAbortRef.current = null
+    }
+  }, [recordedBlob])
+
+  const startMp4Conversion = () => {
+    if (!recordedBlob || conversion.status === 'running') return
+
+    const controller = new AbortController()
+    exportAbortRef.current = controller
+    setConversion({ status: 'running', progress: 0, blob: null, error: null })
+
+    exportBlobToMp4(recordedBlob, {
+      signal: controller.signal,
+      onProgress: (progress) => {
+        setConversion((current) =>
+          current.status === 'running' ? { ...current, progress } : current,
+        )
+      },
+    })
+      .then((mp4Blob) => {
+        setConversion({ status: 'ready', progress: 1, blob: mp4Blob, error: null })
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) {
+          setConversion({ status: 'idle', progress: 0, blob: null, error: null })
+          return
+        }
+        setConversion({
+          status: 'error',
+          progress: 0,
+          blob: null,
+          error: err instanceof Error ? err.message : 'MP4 conversion failed.',
+        })
+      })
+      .finally(() => {
+        exportAbortRef.current = null
+      })
+  }
+
+  const saveNative = () => {
+    exportAbortRef.current?.abort()
+    exportAbortRef.current = null
+    const base = fileName.replace(/\.(webm|mp4)$/i, '')
+    void saveRecording(undefined, ensureExtension(base, nativeExt))
+  }
+
+  const saveConvertedMp4 = () => {
+    if (!conversion.blob) return
+    const base = fileName.replace(/\.(webm|mp4)$/i, '')
+    void saveRecording(conversion.blob, ensureExtension(base, 'mp4'))
+  }
 
   return (
     <div style={{ maxWidth: 720, margin: '0 auto', fontFamily: 'system-ui, sans-serif', color: 'var(--text)' }}>
@@ -182,6 +260,52 @@ const WebcamRecorderInner: FC = () => {
         </div>
       )}
 
+      <div style={{ marginTop: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'end' }}>
+        <label style={{ display: 'grid', gap: 4, color: 'var(--muted)', fontSize: 13 }}>
+          Resolution
+          <select
+            aria-label="Resolution"
+            value={resolution}
+            disabled={status !== 'idle' && status !== 'stopped'}
+            onChange={(e) => setResolution(e.target.value as '720p' | '1080p')}
+            style={{
+              background: 'var(--surface)',
+              color: 'var(--text)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '6px 8px',
+            }}
+          >
+            <option value="720p">720p</option>
+            <option value="1080p">1080p</option>
+          </select>
+        </label>
+        <label style={{ display: 'grid', gap: 4, color: 'var(--muted)', fontSize: 13 }}>
+          Bitrate
+          <select
+            aria-label="Bitrate"
+            value={bitrate}
+            disabled={status !== 'idle' && status !== 'stopped'}
+            onChange={(e) => setBitrate(e.target.value as 'low' | 'medium' | 'high' | 'ultra')}
+            style={{
+              background: 'var(--surface)',
+              color: 'var(--text)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              padding: '6px 8px',
+            }}
+          >
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="ultra">Ultra</option>
+          </select>
+        </label>
+        <span style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 7 }}>
+          Next recording: {resolution} · {bitrate}
+        </span>
+      </div>
+
       <div style={{ marginTop: 16, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         {canStart && (
           <button onClick={startPreview} style={{ ...btn, background: '#2563eb', color: '#fff' }}>
@@ -300,14 +424,94 @@ const WebcamRecorderInner: FC = () => {
               fontSize: 14,
             }}
           />
+
+          <label style={{ display: 'block', marginTop: 12, fontWeight: 600 }}>
+            Format
+            <select
+              aria-label="Save format"
+              value={saveFormat}
+              onChange={(e) => {
+                const next = e.target.value as 'native' | 'mp4'
+                setSaveFormat(next)
+                setConversion({ status: 'idle', progress: 0, blob: null, error: null })
+                const base = fileName.replace(/\.(webm|mp4)$/i, '')
+                setFileName(ensureExtension(base, next === 'mp4' ? 'mp4' : nativeExt))
+              }}
+              style={{
+                display: 'block',
+                width: '100%',
+                marginTop: 6,
+                padding: '6px 8px',
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: 'var(--surface)',
+                color: 'var(--text)',
+              }}
+            >
+              <option value="native">Native (.{nativeExt})</option>
+              <option value="mp4">MP4 (.mp4)</option>
+            </select>
+          </label>
+
+          {saveFormat === 'mp4' && conversion.status === 'idle' && recordedBlob.type.includes('mp4') === false && (
+            <p style={{ marginTop: 8, color: 'var(--muted)', fontSize: 13 }}>
+              Converting from WebM to MP4 may take longer in the browser.
+            </p>
+          )}
+
+          {conversion.status === 'running' && (
+            <p style={{ marginTop: 8, color: 'var(--muted)', fontSize: 13 }}>
+              Converting to MP4… {Math.round(conversion.progress * 100)}%
+            </p>
+          )}
+
+          {conversion.status === 'ready' && (
+            <p style={{ marginTop: 8, color: '#059669', fontSize: 13, fontWeight: 600 }}>
+              MP4 conversion complete. Ready to save.
+            </p>
+          )}
+
+          {conversion.status === 'error' && (
+            <p style={{ marginTop: 8, color: '#dc2626', fontSize: 13 }}>
+              {conversion.error} You can still save the original file.
+            </p>
+          )}
+
           <p style={{ marginTop: 8, color: '#6b7280', fontSize: 13 }}>
-            Use Save to choose a custom folder/path in Chrome or Edge. If unavailable, the file
-            downloads with this name. Cancel discards the current recording.
+            {isSaveFilePickerSupported()
+              ? 'Chrome or Edge can choose a custom folder/path for this file.'
+              : 'Firefox/Safari usually save to your default Downloads folder with this filename, unless your browser is set to ask where to save.'}{' '}
+            Cancel discards the current recording.
           </p>
-          <div style={{ marginTop: 12, display: 'flex', gap: 10 }}>
-            <button onClick={saveRecording} style={{ ...btn, background: '#059669', color: '#fff' }}>
-              Save
-            </button>
+          <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {!needsMp4Conversion && (
+              <button onClick={saveNative} style={{ ...btn, background: '#059669', color: '#fff' }}>
+                Save
+              </button>
+            )}
+
+            {needsMp4Conversion && conversion.status !== 'ready' && (
+              <button
+                onClick={startMp4Conversion}
+                disabled={conversion.status === 'running'}
+                style={{ ...btn, background: '#059669', color: '#fff', opacity: conversion.status === 'running' ? 0.6 : 1 }}
+              >
+                {conversion.status === 'running' ? 'Converting…' : conversion.status === 'error' ? 'Retry MP4' : 'Convert & Save MP4'}
+              </button>
+            )}
+
+            {needsMp4Conversion && conversion.status === 'ready' && (
+              <button onClick={saveConvertedMp4} style={{ ...btn, background: '#059669', color: '#fff' }}>
+                Save MP4
+              </button>
+            )}
+
+            {needsMp4Conversion && (
+              <button onClick={saveNative} style={{ ...btn, background: '#2563eb', color: '#fff' }}>
+                Save WebM now
+              </button>
+            )}
+
             <button
               onClick={discardRecording}
               style={{ ...btn, background: 'var(--border)', color: 'var(--text)' }}

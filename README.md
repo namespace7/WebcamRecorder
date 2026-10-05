@@ -1,6 +1,6 @@
 # WebcamRecorder
 
-**WebcamRecorder** is a 100% free, privacy-first alternative to Loom. Built with React and the native MediaRecorder API to record full-screen webcam video locally with zero cloud or infrastructure costs.
+**WebcamRecorder** is a 100% free, privacy-first alternative to Loom. Built with React and the native MediaRecorder API to record webcam video locally with zero cloud or infrastructure costs.
 
 ## Problem it solves
 
@@ -21,9 +21,9 @@ WebcamRecorder keeps the entire workflow in the browser. The camera/microphone s
 - Start, Pause, Resume, and Stop controls
 - Dimmed video preview while paused
 - MIME type fallback across browsers:
-  - `video/webm;codecs=vp8,opus`
-  - `video/webm`
+  - `video/webm;codecs=vp9,opus`
   - `video/mp4`
+  - `video/webm`
 - Clean hardware lifecycle cleanup: all media tracks are stopped when recording ends or the component unmounts
 - Local file save using `URL.createObjectURL`
 - Preferred save path in Chromium browsers: File System Access API (`showSaveFilePicker`)
@@ -32,8 +32,15 @@ WebcamRecorder keeps the entire workflow in the browser. The camera/microphone s
 - Error boundary for permission/runtime failures
 - Permission guidance modal that explains camera/microphone access requirements
 - Dark mode: follows system theme by default, with manual Light/Dark/System override stored in localStorage
+- Browser-specific save behavior notes in the save dialog
+- Quality presets for resolution (`720p`, `1080p`) and bitrate (`low`, `medium`, `high`, `ultra`) before the next recording
+  - 720p: Low 1 Mbps, Medium 3 Mbps, High 6 Mbps, Ultra 10 Mbps
+  - 1080p: Low 2 Mbps, Medium 6 Mbps, High 10 Mbps, Ultra 16 Mbps
+- Optional MP4 export at save time using `ffmpeg.wasm`, with a WebM fallback during conversion
 - Unit tests with Vitest
 - Browser automation tests with Playwright
+
+> MP4 export is optional and slower than native browser recording because the conversion runs fully inside the browser with `ffmpeg.wasm`. The ffmpeg WASM assets are only fetched when MP4 export is used.
 
 ## Architecture
 
@@ -46,13 +53,16 @@ src/
   components/
     WebcamRecorder.tsx
     RecordingErrorBoundary.tsx
+    PermissionModal.tsx
 
   hooks/
     useWebcamRecorder.ts
+    useTheme.ts
 
   lib/
     recorder.ts
     recorder.test.ts
+    ffmpegExport.ts
 
 tests/
   webcamRecorder.spec.ts
@@ -152,10 +162,9 @@ npm run lint
 - [ ] Add optional screen recording support via `getDisplayMedia`
 - [ ] Add camera/microphone device selectors
 - [ ] Add recording duration limit with auto-stop
-- [ ] Add multiple bitrate/video quality presets: 720p, 1080p, low/medium/high bitrate
 - [ ] Add webcam/mic level meters before recording
 - [ ] Add retry permission flow when browser permission is denied
 - [ ] Add a PR check workflow for lint/unit/e2e tests
 - [ ] Add keyboard shortcuts for start/pause/stop
 - [ ] Add a proper app favicon and PWA manifest
-- [ ] Add Firefox/Safari save behavior notes in UI
+- [ ] Add Firefox/Safari verified playback/export notes if needed
